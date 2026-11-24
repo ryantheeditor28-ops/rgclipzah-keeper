@@ -1,0 +1,60 @@
+name: RGCLIPZAH keeper
+
+# The cadence lives HERE, not in the worker's cron.
+#
+# GitHub's cron scheduler is effectively dead on this account: a public
+# probe repo with a 5-minute cron fired ONCE in 10.5 hours, and the private
+# worker repo with a 2-hour cron fired ONCE in ~21 hours. A 2-hour cadence
+# cannot be built on `on: schedule`.
+#
+# Instead, this workflow runs one long job that keeps itself alive:
+# it queues a successor run of itself, then polls the private worker's
+# state and dispatches the worker exactly when a post is due.
+#
+# workflow_dispatch is reliable on this account (every manual dispatch
+# succeeded), so the chain never depends on the flaky scheduler. The
+# schedule entry below is only a cold-start backstop for the chain.
+on:
+  schedule:
+    # Cold-start backstop only. The keeper re-arms itself.
+    - cron: "*/17 * * * *"
+  workflow_dispatch:
+    inputs:
+      not_before:
+        description: "Epoch seconds to wait before opening the window"
+        required: false
+        default: "0"
+
+# One keeper at a time: a queued run waits for the live one instead of
+# stacking up.
+concurrency:
+  group: rgclipzah-keeper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  keeper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run the keeper
+        env:
+          WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}
+          REPO_TOKEN: ${{ github.token }}
+          KEEPER_NOT_BEFORE: ${{ inputs.not_before || '0' }}
+          WORKER_REPO: ryantheeditor28-ops/rgclipzah-loop
+          WORKER_WORKFLOW: loop.yml
+          WORKER_REF: master
+          KEEPER_REPO: ryantheeditor28-ops/rgclipzah-keeper
+          KEEPER_WORKFLOW: keeper.yml
+          KEEPER_REF: main
+        run: python keeper.py
